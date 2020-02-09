@@ -1,4 +1,4 @@
-Welcome to the factor_switching repository!
+# Welcome to the factor_switching repository!
 
 
 * This repo contains R scripts that reproduce some of the examples in Papastamoulis and Ntzoufras (2020). 
