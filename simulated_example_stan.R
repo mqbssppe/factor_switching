@@ -45,7 +45,7 @@ corrplot(cor(x), method='ellipse')
 Y = scale(x)
 
 fa.data <-list(P=P,N=N,Y=Y,D=q)
-fa.model<- stan("../fa_mine.stan", data = fa.data, chains = 0, pars=c("L","psi"))
+fa.model<- stan("src/fa_mine.stan", data = fa.data, chains = 0, pars=c("L","psi"))
 
 # a function to generate intial values that are slightly jittered for each chain.
 init_fun = function() {
