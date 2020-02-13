@@ -1,53 +1,36 @@
 library("rstan")
 library("parallel")
-
-
-#p <- 180
-#q.true <- 90
-#n <- 1000
-D <- 2
-P <- 8 
-N <- 100
-
-
 library('MASS')
-library('mvtnorm')
-library('lpSolve')
-p <- P
-q.true <- D
-n <- N
-K <- 1
-q <- q.true
+library('coda')
+library('factor.switching')
+library('RColorBrewer')
+source('src/simulate_fa.R')
 
-myDirichlet <- function (alpha) {
-    k <- length(alpha)
-    theta <- rgamma(k, shape = alpha, rate = 1)
-    return(theta/sum(theta))
-}
-
+#--------------------------------------
+#	simulated dataset parameters
+#--------------------------------------
+n = 100 # sample size
+p = 8   # number of variables
+q = 2   # number of factors
 sINV_diag = rep(0.01,p)    # diagonal of inverse variance of errors
-#sINV_diag[1:(q-1)] = 0.1*sINV_diag[1:(q-1)]
+#--------------------------------------
+#	generate dataa
 set.seed(100)
-
-if( dir.exists('~/Dropbox') ){
-	source('~/Dropbox/fa_sign_swithing/simdata_no_constraint.R')
-}else{
-	source('/myspace/Dropbox/fa_sign_swithing/simdata_no_constraint.R')
-}
-
-syntheticDataset <- SIMData(sameLambda=TRUE,K.true = K, n = n, q = q, p = p, 
+syntheticDataset <- SIMData(sameLambda=TRUE,K.true = 1, n = n, q = q, p = p, 
                      sINV_values = sINV_diag, loading_means = c(-30, -25, -20, 30, 25, 20), loading_sd = rep(0.1, 6))
-
 x <- syntheticDataset$data
 colnames(x) <- paste0( 'V', 1:dim(x)[2])
-library(corrplot)
-corrplot(cor(x), method='ellipse')
-Y = scale(x)
+#	true values of factor loadings (up to a positive multiplicative constant):
+syntheticDataset$factorLoadings[1,,]/max(abs(syntheticDataset$factorLoadings[1,,]))
 
-fa.data <-list(P=P,N=N,Y=Y,D=q)
+
+
+D <- q; P <- p; N <- n; p <- P; q.true <- D; n <- N; K <- 1; q <- q.true
+Y = scale(x)
+fa.data <- list(P=P,N=N,Y=Y,D=q)
 fa.model<- stan("src/fa_mine.stan", data = fa.data, chains = 0, pars=c("L","psi"))
 
-# a function to generate intial values that are slightly jittered for each chain.
+# initial values of loadings
 init_fun = function() {
   init.values<-list(psi=runif(P),
 			L = matrix(rnorm(P*q, 0, 1), nrow = P)			
@@ -55,7 +38,7 @@ init_fun = function() {
   return(init.values); 
 }
 
-
+# Generate 8 MCMC chains in parallel using STAN
 Nchains <- 8
 Niter <- 11000
 warmup <- 1000
@@ -74,10 +57,10 @@ sflist <- mclapply(1:Nchains, mc.cores = Nchains,
                                       refresh = 1000))
 t_end <- proc.time()[3]
 t_elapsed <- t_end - t_start
-save.image('bigImage.RData') 
+#save.image('bigImage.RData') 
 fa.fit<- sflist2stanfit(sflist) 
 print(fa.fit,probs = c(0.5))
-
+# save MCMC chains of factor loadings to a list named 'posterior'
 posterior <- vector('list', length = Nchains)
 for(chain in 1:Nchains){
 	posterior[[chain]] <- matrix(nrow = Niter - warmup, ncol = p*q)
@@ -93,24 +76,24 @@ for(chain in 1:Nchains){
 		}
 	}
 }
-
-source(file = '/myspace/Dropbox/fa_sign_swithing/rsp_algorithm/factorRotations.R')
+# post-processed chains are stored to the list named `tankard`
 tankard <- vector('list', length = Nchains)
 for(chain in 1:Nchains){
 	cat(paste0('**********            chain ', chain),'\n')
 	tankard[[chain]] <- rsp_exact( lambda_mcmc = posterior[[chain]], maxIter = 100, threshold = 1e-6, verbose=TRUE )
 }
+# you can plot e.g. the first two chains
+plot(tankard[[1]], prob = 0.99)	
+plot(tankard[[2]], prob = 0.99)
 
-plot.rsp(rsp.object=tankard[[1]], prob = 0.99)
+# make all chains comparable
+allChains <- compareMultipleChains(rspObjectList=tankard)
+# compute gelman diagnostic (coda package)
+gelman.diag(allChains, confidence = 0.95)
+gelman.plot(allChains,ask=TRUE)
 
-fourChains <- compareMultipleChains(rspObjectList=tankard)
-fourChains <- compareMultipleChains(rspObjectList=tankard, scheme='full', sa_loops=10)
-gelman.diag(fourChains, confidence = 0.95)
-gelman.plot(fourChains,ask=TRUE)
-
-library(RColorBrewer)
+# produce plot
 myCol<-brewer.pal(9,name='Set1')
-
 nIter<-100
 combinedMCMCraw <- array(data=NA,dim=c(Nchains*nIter,p*q))
 combinedMCMCproc <- array(data=NA,dim=c(Nchains*nIter,p*q))
@@ -119,22 +102,20 @@ j <- 0
 for(i in 1:8){
 	combinedMCMCraw[(j*nIter):((j+1)*nIter),] <- posterior[[i]][(j*nIter):((j+1)*nIter),] 
 	combinedMCMCproc[(j*nIter):((j+1)*nIter),] <- tankard[[i]]$lambda_reordered_mcmc[(j*nIter):((j+1)*nIter),] 
-	combinedMCMC[(j*nIter):((j+1)*nIter),] <- fourChains[[i]][(j*nIter):((j+1)*nIter),] 
+	combinedMCMC[(j*nIter):((j+1)*nIter),] <- allChains[[i]][(j*nIter):((j+1)*nIter),] 
 	j <- j+1
 }
 myColSeq <- myCol[rep(1:8, each=nIter)]
-pdf(file= 'mcmcTrace_8chains.pdf',width=9,height=12)
-	par(mfrow=c(8,2), mar=c(2,5,1,1))
-	de <- colnames(posterior[[1]])
-	for(j in 1:16){
-		ind<-strsplit(strsplit(de[j],split='V')[[1]][2],split='_')[[1]]
-	        ac<-as.character(paste0(ind,collapse='.'))
-		plot(1:800,combinedMCMC[,j], type='n',ylim=c(-1.2,1.2),
-			ylab = bquote(lambda[.(ac)]),cex.axis = 1.5, cex.lab=1.5)	
-		points(1:800, combinedMCMCraw[,j],pch=4,col='gray80')
-		points(1:800, combinedMCMCproc[,j],pch=3,col=myColSeq)
-		points(1:800,combinedMCMC[,j], pch= 16,cex=0.5, col='black')
-		abline(v=(1:7)*100)
-	}
-dev.off()
+par(mfrow=c(8,2), mar=c(2,5,1,1))
+de <- colnames(posterior[[1]])
+for(j in 1:16){
+	ind<-strsplit(strsplit(de[j],split='V')[[1]][2],split='_')[[1]]
+        ac<-as.character(paste0(ind,collapse='.'))
+	plot(1:800,combinedMCMC[,j], type='n',ylim=c(-1.2,1.2),
+		ylab = bquote(lambda[.(ac)]),cex.axis = 1.5, cex.lab=1.5)	
+	points(1:800, combinedMCMCraw[,j],pch=4,col='gray80')
+	points(1:800, combinedMCMCproc[,j],pch=3,col=myColSeq)
+	points(1:800,combinedMCMC[,j], pch= 16,cex=0.5, col='black')
+	abline(v=(1:7)*100)
+}
 
